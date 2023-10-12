@@ -17,6 +17,7 @@ package io.netty.example.http2.helloworld.client;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
@@ -76,7 +77,7 @@ public final class Http2Client {
         final SslContext sslCtx = initializeSSL();
         // Create Netty objects for connections
         EventLoopGroup workerGroup = new NioEventLoopGroup();
-        Http2ClientInitializer initializer = new Http2ClientInitializer(sslCtx, Integer.MAX_VALUE);
+        Http2ClientInitializer initializer = new Http2ClientInitializer(sslCtx, Integer.MAX_VALUE, URL);
         HttpResponseHandler responseHandler = initializer.responseHandler();
         // Create request specific config
         HttpScheme scheme = SSL ? HttpScheme.HTTPS : HttpScheme.HTTP;
@@ -202,8 +203,15 @@ public final class Http2Client {
         @Override
         public Void call() throws Exception {
             HttpResponseHandler responseHandler = initializer.responseHandler();
-            responseHandler.put(streamId, channel.write(request), channel.newPromise());
-            channel.flush();
+            ChannelFuture future = channel.writeAndFlush(request);
+            // responseHandler.put(streamId, future, channel.newPromise());
+            // channel.flush();
+            // Await until write is finish to write the reset
+            try {
+                future.await(5000);
+            } catch(Exception e) {
+                System.out.println("Got exception waiting for flush on stream: " + streamId);
+            }
             initializer.connectionHandler().resetStream(ctx, streamId, 0, channel.newPromise());
             return null;
         }

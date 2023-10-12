@@ -50,13 +50,15 @@ public class Http2ClientInitializer extends ChannelInitializer<SocketChannel> {
 
     private final SslContext sslCtx;
     private final int maxContentLength;
+    private final String url;
     private HttpToHttp2ConnectionHandler connectionHandler;
     private HttpResponseHandler responseHandler;
     private Http2SettingsHandler settingsHandler;
 
-    public Http2ClientInitializer(SslContext sslCtx, int maxContentLength) {
+    public Http2ClientInitializer(SslContext sslCtx, int maxContentLength, String url) {
         this.sslCtx = sslCtx;
         this.maxContentLength = maxContentLength;
+        this.url = url;
     }
 
     @Override
@@ -143,7 +145,10 @@ public class Http2ClientInitializer extends ChannelInitializer<SocketChannel> {
         @Override
         public void channelActive(ChannelHandlerContext ctx) throws Exception {
             DefaultFullHttpRequest upgradeRequest =
-                    new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, "/", Unpooled.EMPTY_BUFFER);
+                    new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, url, Unpooled.EMPTY_BUFFER);
+
+            upgradeRequest.headers().set("Upgrade", "h2c");
+            upgradeRequest.headers().set("Connection", "Upgrade, HTTP2-Settings");
 
             // Set HOST header as the remote peer may require it.
             InetSocketAddress remote = (InetSocketAddress) ctx.channel().remoteAddress();
