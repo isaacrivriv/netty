@@ -111,6 +111,10 @@ public final class HelloWorldHttp2Handler extends Http2ConnectionHandler impleme
             ByteBuf content = ctx.alloc().buffer();
             content.writeBytes(RESPONSE_BYTES.duplicate());
             ByteBufUtil.writeAscii(content, " - via HTTP/2");
+            // Wait a bit as if you were doing something intense with the request
+            try {
+                Thread.sleep(250);
+            } catch (Exception e) { }
             sendResponse(ctx, streamId, content);
         }
     }

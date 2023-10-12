@@ -27,6 +27,8 @@ import java.util.concurrent.TimeUnit;
 public class Http2SettingsHandler extends SimpleChannelInboundHandler<Http2Settings> {
     private final ChannelPromise promise;
 
+    protected ChannelHandlerContext ctx;
+
     /**
      * Create new instance
      *
@@ -55,6 +57,7 @@ public class Http2SettingsHandler extends SimpleChannelInboundHandler<Http2Setti
 
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, Http2Settings msg) throws Exception {
+        this.ctx = ctx;
         promise.setSuccess();
 
         // Only care about the first settings message

@@ -85,6 +85,10 @@ public class Http2ClientInitializer extends ChannelInitializer<SocketChannel> {
         return responseHandler;
     }
 
+    public HttpToHttp2ConnectionHandler connectionHandler() {
+        return connectionHandler;
+    }
+
     public Http2SettingsHandler settingsHandler() {
         return settingsHandler;
     }
