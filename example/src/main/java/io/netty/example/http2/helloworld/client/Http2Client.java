@@ -69,8 +69,7 @@ public final class Http2Client {
     static final String HOST = System.getProperty("host", "127.0.0.1");
     static final int PORT = Integer.parseInt(System.getProperty("port", SSL? "8443" : "8080"));
     static final String URL = System.getProperty("url", "/whatever");
-    static final String URL2 = System.getProperty("url2");
-    static final String URL2DATA = System.getProperty("url2data", "test data!");
+    static final int TRIES = Integer.parseUnsignedInt(System.getProperty("tries", "10"));
 
     public static void main(String[] args) throws Exception {
         // Configure SSL.
@@ -83,12 +82,12 @@ public final class Http2Client {
         HttpScheme scheme = SSL ? HttpScheme.HTTPS : HttpScheme.HTTP;
         AsciiString hostName = new AsciiString(HOST + ':' + PORT);
         FullHttpRequest request = createSimpleGetRequest(URL, hostName, scheme);
-        // Create and executor service for managing threads
-        final ExecutorService executor = Executors.newFixedThreadPool(100);
         // Start test for bombarding streams and cancelling them
-        System.err.println("Starting bombarding requests...");
+        System.err.println("Starting rapid reset requests...");
         try {
-            for (int i = 0; i < 10; i++) {
+            for (int i = 0; i < TRIES; i++) {
+                // Create and executor service for managing threads
+                ExecutorService executor = Executors.newFixedThreadPool(100);
                 // Open connection to server
                 Channel channel = openConnection(workerGroup, initializer);
                 System.out.println("Connected to [" + HOST + ':' + PORT + ']');
@@ -109,18 +108,23 @@ public final class Http2Client {
                 // Think about running this in a thread concurrently with other threads
                 // To have concurrent streams running at the same time
                 for (int streamId = 3; streamId / 2 + 1 < maxConcurrentStreams; streamId += 2) {
+                    if (!channel.isOpen()) {
+                        System.out.println("Channel: "+ channel + " was closed working on stream: " + streamId);
+                        break;
+                    }
                     executor.submit(new RequestAndResetCallable(request, http2SettingsHandler.ctx,
                         initializer, channel, streamId));
+                    Thread.sleep(20);
                 }
 
                 System.out.println("Finished HTTP/2 request");
 
                 // Wait until the connection is closed. Possibly start another connection
                 channel.close();
+                executor.shutdownNow();
             }
         } finally {
             workerGroup.shutdownGracefully();
-            executor.shutdownNow();
         }
     }
 
@@ -202,17 +206,27 @@ public final class Http2Client {
 
         @Override
         public Void call() throws Exception {
+            if (!channel.isOpen()) {
+                System.out.println("Channel: " + channel + " was not open for stream: " + streamId);
+                return null;
+            }
             HttpResponseHandler responseHandler = initializer.responseHandler();
             ChannelFuture future = channel.writeAndFlush(request);
             // responseHandler.put(streamId, future, channel.newPromise());
             // channel.flush();
             // Await until write is finish to write the reset
             try {
-                future.await(5000);
+                future.await(1000);
             } catch(Exception e) {
                 System.out.println("Got exception waiting for flush on stream: " + streamId);
+                return null;
+            }
+            if (!channel.isOpen()) {
+                System.out.println("Channel: " + channel + " was not open after request sent for stream: " + streamId);
+                return null;
             }
             initializer.connectionHandler().resetStream(ctx, streamId, 0, channel.newPromise());
+            channel.flush();
             return null;
         }
 

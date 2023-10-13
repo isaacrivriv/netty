@@ -14,7 +14,9 @@
  */
 package io.netty.example.http2.helloworld.client;
 
+import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
+import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelInitializer;
@@ -33,6 +35,7 @@ import io.netty.handler.codec.http2.Http2Connection;
 import io.netty.handler.codec.http2.Http2FrameLogger;
 import io.netty.handler.codec.http2.HttpToHttp2ConnectionHandler;
 import io.netty.handler.codec.http2.HttpToHttp2ConnectionHandlerBuilder;
+import io.netty.handler.codec.http2.InboundHttp2ToHttpAdapter;
 import io.netty.handler.codec.http2.InboundHttp2ToHttpAdapterBuilder;
 import io.netty.handler.ssl.ApplicationProtocolNames;
 import io.netty.handler.ssl.ApplicationProtocolNegotiationHandler;
@@ -55,6 +58,25 @@ public class Http2ClientInitializer extends ChannelInitializer<SocketChannel> {
     private HttpResponseHandler responseHandler;
     private Http2SettingsHandler settingsHandler;
 
+
+    private class CustomInboundHttp2ToHttpAdapter extends InboundHttp2ToHttpAdapter {
+
+        Channel channel;
+
+        protected CustomInboundHttp2ToHttpAdapter(Http2Connection connection, int maxContentLength, boolean validateHttpHeaders, boolean propagateSettings, Channel channel) {
+            super(connection, maxContentLength, validateHttpHeaders, propagateSettings);
+            this.channel = channel;
+        }
+
+        @Override
+        public void onGoAwayReceived(int lastStreamId, long errorCode, ByteBuf debugData) {
+            // TODO Auto-generated method stub
+            super.onGoAwayReceived(lastStreamId, errorCode, debugData);
+            channel.close();
+        }
+        
+    }
+
     public Http2ClientInitializer(SslContext sslCtx, int maxContentLength, String url) {
         this.sslCtx = sslCtx;
         this.maxContentLength = maxContentLength;
@@ -64,13 +86,15 @@ public class Http2ClientInitializer extends ChannelInitializer<SocketChannel> {
     @Override
     public void initChannel(SocketChannel ch) throws Exception {
         final Http2Connection connection = new DefaultHttp2Connection(false);
+        InboundHttp2ToHttpAdapter adapter = new InboundHttp2ToHttpAdapterBuilder(connection)
+                                .maxContentLength(maxContentLength)
+                                .propagateSettings(true)
+                                .build();
+        adapter = new CustomInboundHttp2ToHttpAdapter(connection, maxContentLength, true, true, ch);
         connectionHandler = new HttpToHttp2ConnectionHandlerBuilder()
                 .frameListener(new DelegatingDecompressorFrameListener(
                         connection,
-                        new InboundHttp2ToHttpAdapterBuilder(connection)
-                                .maxContentLength(maxContentLength)
-                                .propagateSettings(true)
-                                .build()))
+                        adapter))
                 .frameLogger(logger)
                 .connection(connection)
                 .build();
