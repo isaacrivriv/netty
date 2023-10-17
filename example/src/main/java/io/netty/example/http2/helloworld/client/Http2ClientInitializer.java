@@ -54,6 +54,7 @@ public class Http2ClientInitializer extends ChannelInitializer<SocketChannel> {
     private final SslContext sslCtx;
     private final int maxContentLength;
     private final String url;
+    private final boolean enableFrameLogging;
     private HttpToHttp2ConnectionHandler connectionHandler;
     private HttpResponseHandler responseHandler;
     private Http2SettingsHandler settingsHandler;
@@ -77,27 +78,29 @@ public class Http2ClientInitializer extends ChannelInitializer<SocketChannel> {
         
     }
 
-    public Http2ClientInitializer(SslContext sslCtx, int maxContentLength, String url) {
+    public Http2ClientInitializer(SslContext sslCtx, int maxContentLength, String url, boolean enableFrameLogging) {
         this.sslCtx = sslCtx;
         this.maxContentLength = maxContentLength;
         this.url = url;
+        this.enableFrameLogging = enableFrameLogging;
     }
 
     @Override
     public void initChannel(SocketChannel ch) throws Exception {
         final Http2Connection connection = new DefaultHttp2Connection(false);
-        InboundHttp2ToHttpAdapter adapter = new InboundHttp2ToHttpAdapterBuilder(connection)
-                                .maxContentLength(maxContentLength)
-                                .propagateSettings(true)
-                                .build();
-        adapter = new CustomInboundHttp2ToHttpAdapter(connection, maxContentLength, true, true, ch);
-        connectionHandler = new HttpToHttp2ConnectionHandlerBuilder()
+        // InboundHttp2ToHttpAdapter adapter = new InboundHttp2ToHttpAdapterBuilder(connection)
+        //                         .maxContentLength(maxContentLength)
+        //                         .propagateSettings(true)
+        //                         .build();
+        InboundHttp2ToHttpAdapter adapter = new CustomInboundHttp2ToHttpAdapter(connection, maxContentLength, true, true, ch);
+        HttpToHttp2ConnectionHandlerBuilder builder = new HttpToHttp2ConnectionHandlerBuilder()
                 .frameListener(new DelegatingDecompressorFrameListener(
                         connection,
                         adapter))
-                .frameLogger(logger)
-                .connection(connection)
-                .build();
+                .connection(connection);
+        if(enableFrameLogging)
+            builder.frameLogger(logger);
+        connectionHandler = builder.build();
         responseHandler = new HttpResponseHandler();
         settingsHandler = new Http2SettingsHandler(ch.newPromise());
         if (sslCtx != null) {

