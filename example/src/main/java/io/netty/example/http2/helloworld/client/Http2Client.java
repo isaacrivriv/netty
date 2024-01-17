@@ -15,6 +15,7 @@
 package io.netty.example.http2.helloworld.client;
 
 import io.netty.bootstrap.Bootstrap;
+import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelOption;
@@ -26,6 +27,7 @@ import io.netty.handler.codec.http.FullHttpRequest;
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpHeaderValues;
 import io.netty.handler.codec.http.HttpScheme;
+import io.netty.handler.codec.http2.Http2Flags;
 import io.netty.handler.codec.http2.Http2SecurityUtil;
 import io.netty.handler.codec.http2.HttpConversionUtil;
 import io.netty.handler.ssl.ApplicationProtocolConfig;
@@ -116,6 +118,23 @@ public final class Http2Client {
             HttpScheme scheme = SSL ? HttpScheme.HTTPS : HttpScheme.HTTP;
             AsciiString hostName = new AsciiString(HOST + ':' + PORT);
             System.err.println("Sending request(s)...");
+            // Send a malformed priority frame and should get a stream reset
+            // Entire malformed frame is 0000040200000000037fffffffff
+            ByteBuf buffer = channel.pipeline().context(initializer.connectionHandler).alloc().buffer(13); // 14 should be normal size
+            buffer.writeMedium(4); // A PRIORITY frame with a length other than 5 octets MUST be treated as a stream error
+            buffer.writeByte((byte)0x2);
+            buffer.writeByte((byte)0x0);
+            buffer.writeInt(3);
+            buffer.writeByte((byte)0x7f);
+            buffer.writeByte((byte)0xff);
+            buffer.writeByte((byte)0xff);
+            buffer.writeByte((byte)0xff);
+            buffer.writeByte((byte)0xff);
+
+            channel.writeAndFlush(buffer);
+
+            // Send a request, should be processed correctly but it is not
+
             if (URL != null) {
                 // Create a simple GET request.
                 FullHttpRequest request = new DefaultFullHttpRequest(HTTP_1_1, GET, URL, Unpooled.EMPTY_BUFFER);
@@ -126,18 +145,9 @@ public final class Http2Client {
                 responseHandler.put(streamId, channel.write(request), channel.newPromise());
                 streamId += 2;
             }
-            if (URL2 != null) {
-                // Create a simple POST request with a body.
-                FullHttpRequest request = new DefaultFullHttpRequest(HTTP_1_1, POST, URL2,
-                        wrappedBuffer(URL2DATA.getBytes(CharsetUtil.UTF_8)));
-                request.headers().add(HttpHeaderNames.HOST, hostName);
-                request.headers().add(HttpConversionUtil.ExtensionHeaderNames.SCHEME.text(), scheme.name());
-                request.headers().add(HttpHeaderNames.ACCEPT_ENCODING, HttpHeaderValues.GZIP);
-                request.headers().add(HttpHeaderNames.ACCEPT_ENCODING, HttpHeaderValues.DEFLATE);
-                responseHandler.put(streamId, channel.write(request), channel.newPromise());
-            }
             channel.flush();
             responseHandler.awaitResponses(5, TimeUnit.SECONDS);
+            // Instead a Go Away frame is received with Frame length: 16711680 exceeds maximum: 16384
             System.out.println("Finished HTTP/2 request(s)");
 
             // Wait until the connection is closed.

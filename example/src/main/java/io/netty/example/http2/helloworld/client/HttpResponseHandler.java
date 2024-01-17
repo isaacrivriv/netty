@@ -110,4 +110,13 @@ public class HttpResponseHandler extends SimpleChannelInboundHandler<FullHttpRes
             entry.getValue().setSuccess();
         }
     }
+
+    @Override
+    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause)
+            throws Exception {
+        // Swallow stream reset exception since we don't really care about it
+        System.err.println("HttpResponseHandler swallowing exception caught: " + cause);
+    }
+
+
 }
