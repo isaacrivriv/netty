@@ -37,6 +37,8 @@ public class HttpResponseHandler extends SimpleChannelInboundHandler<FullHttpRes
 
     private final Map<Integer, Entry<ChannelFuture, ChannelPromise>> streamidPromiseMap;
 
+    protected int lastSeenStream = 0;
+
     public HttpResponseHandler() {
         // Use a concurrent map because we add and iterate from the main thread (just for the purposes of the example),
         // but Netty also does a get on the map when messages are received in a EventLoop thread.
@@ -99,10 +101,11 @@ public class HttpResponseHandler extends SimpleChannelInboundHandler<FullHttpRes
             System.err.println("HttpResponseHandler unexpected message received: " + msg);
             return;
         }
-
+        lastSeenStream = streamId;
         Entry<ChannelFuture, ChannelPromise> entry = streamidPromiseMap.get(streamId);
         if (entry == null) {
             System.err.println("Message received for unknown stream id " + streamId);
+
         } else {
             // Do stuff with the message (for now just print it)
             ByteBuf content = msg.content();

@@ -32,6 +32,7 @@ import io.netty.handler.codec.http2.DefaultHttp2Connection;
 import io.netty.handler.codec.http2.DelegatingDecompressorFrameListener;
 import io.netty.handler.codec.http2.Http2ClientUpgradeCodec;
 import io.netty.handler.codec.http2.Http2Connection;
+import io.netty.handler.codec.http2.Http2Exception;
 import io.netty.handler.codec.http2.Http2FrameLogger;
 import io.netty.handler.codec.http2.HttpToHttp2ConnectionHandler;
 import io.netty.handler.codec.http2.HttpToHttp2ConnectionHandlerBuilder;
@@ -74,6 +75,12 @@ public class Http2ClientInitializer extends ChannelInitializer<SocketChannel> {
             // TODO Auto-generated method stub
             super.onGoAwayReceived(lastStreamId, errorCode, debugData);
             channel.close();
+        }
+
+        @Override
+        public void onRstStreamRead(ChannelHandlerContext ctx, int streamId, long errorCode) throws Http2Exception {
+            // TODO Auto-generated method stub
+            // responseHandler.lastSeenStream = streamId;
         }
         
     }

